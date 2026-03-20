@@ -39,6 +39,7 @@ def _prepare_direction_series(processed_df: pd.DataFrame, direction_name: str) -
     if DATE_COLUMN not in processed_df.columns or TARGET_COLUMN not in processed_df.columns:
         raise ValueError(f"в данных нет колонок {DATE_COLUMN} и {TARGET_COLUMN}")
 
+    # берем только один вариант чтобы модель училась отдельно по направлению
     data = processed_df[processed_df["direction"] == direction_name].copy()
     if data.empty:
         raise ValueError(f"нет данных по направлению {direction_name}")
@@ -49,6 +50,7 @@ def _prepare_direction_series(processed_df: pd.DataFrame, direction_name: str) -
     data = data.drop_duplicates(subset=[DATE_COLUMN], keep="last")
 
     series = data.set_index(DATE_COLUMN)[TARGET_COLUMN].astype(float)
+    # выравниваем временной ряд по дням чтобы обучение было стабильным
     full_index = pd.date_range(series.index.min(), series.index.max(), freq="D")
     series = series.reindex(full_index).interpolate(limit_direction="both").ffill().bfill()
     series.name = direction_name
@@ -65,6 +67,7 @@ def train_direction_model(
     if feature_df.empty:
         raise ValueError(f"после генерации признаков для {direction_name} не осталось строк")
 
+    # делим строго по времени без рандома потому что это временной ряд
     train_df, test_df = split_train_test(feature_df)
     x_train = train_df[FEATURE_COLUMNS]
     y_train = train_df[TARGET_COLUMN]
@@ -79,13 +82,10 @@ def train_direction_model(
     predictions: dict[str, pd.Series] = {}
     metrics_by_model: dict[str, dict[str, float]] = {}
 
+    # пробуем две модели и смотрим какая реально лучше на test
     for model_name, model in models.items():
         model.fit(x_train, y_train)
-        y_pred = pd.Series(
-            model.predict(x_test),
-            index=x_test.index,
-            name="predicted",
-        ).clip(lower=0.0)
+        y_pred = pd.Series(model.predict(x_test), index=x_test.index, name="predicted").clip(lower=0.0)
         predictions[model_name] = y_pred
         metrics_by_model[model_name] = calculate_metrics(y_test.to_numpy(), y_pred.to_numpy())
 
@@ -122,6 +122,7 @@ def train_direction_model(
     path = model_artifact_path(direction_name)
     if save_artifact:
         ensure_project_dirs()
+        # сохраняем не только модель но и все что нужно для прогноза
         joblib.dump(artifact, path)
 
     return {
@@ -137,9 +138,7 @@ def train_direction_model(
 def load_model_artifact(direction_name: str) -> dict:
     path = model_artifact_path(direction_name)
     if not path.exists():
-        raise FileNotFoundError(
-            f"модель для направления {direction_name} не найдена: {path}"
-        )
+        raise FileNotFoundError(f"модель для направления {direction_name} не найдена: {path}")
     return joblib.load(path)
 
 
@@ -170,7 +169,7 @@ def _load_or_refresh_processed_data(
                 print(f"[data] {message}")
             return processed_df
         except Exception as exc:
-            print(f"[warn] не удалось обновить данные через api: {exc}")
+            print(f"[warn] не получилось обновить данные через api: {exc}")
             print("[warn] использую последние processed данные с диска")
             return load_processed_salary_data()
 
@@ -243,6 +242,7 @@ def main() -> None:
     trained_count = 0
     for direction in top_directions:
         try:
+            # обучение идет отдельно для каждого направления чтобы модели не путали ряд
             result = train_direction_model(processed_df, direction, save_artifact=True)
             metrics_table = build_metrics_table(result["metrics"])
             print("-" * 80)
@@ -262,3 +262,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

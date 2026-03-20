@@ -14,7 +14,7 @@ MODELS_DIR = BASE_DIR / "models"
 RAW_VACANCIES_PATH = RAW_DATA_DIR / "it_salary_vacancies_raw.csv"
 PROCESSED_SALARY_PATH = PROCESSED_DATA_DIR / "it_salary_processed_daily.csv"
 
-# направления для автофильтра
+# тут лежат направления которые приложение берет в автоанализ
 DIRECTION_QUERIES = {
     "Data Scientist": "data scientist OR дата сайентист",
     "Machine Learning Engineer": "machine learning engineer OR ml engineer",
@@ -69,11 +69,13 @@ RF_PARAMS = {
 
 
 def ensure_project_dirs() -> None:
+    # создаем папки заранее чтобы не ловить ошибки при сохранении файлов
     for path in (DATA_DIR, RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
 def default_date_range(history_days: int = DEFAULT_HISTORY_DAYS) -> tuple[date, date]:
+    # берем последние дни до вчерашнего дня чтобы не тянуть незакрытые данные
     safe_days = max(30, int(history_days))
     end_date = date.today() - timedelta(days=1)
     start_date = end_date - timedelta(days=safe_days - 1)
@@ -81,10 +83,13 @@ def default_date_range(history_days: int = DEFAULT_HISTORY_DAYS) -> tuple[date, 
 
 
 def direction_code(direction_name: str) -> str:
+    # переводим название в короткий код для имени файла модели
     normalized = direction_name.strip().lower()
     normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
     return normalized.strip("_") or "direction"
 
 
 def model_artifact_path(direction_name: str) -> Path:
+    # у каждой модели свой отдельный файл так проще искать и обновлять
     return MODELS_DIR / f"{direction_code(direction_name)}_salary_model.joblib"
+

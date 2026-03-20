@@ -36,32 +36,16 @@ def init_state() -> None:
         "auto_result": None,
         "last_error": None,
         "last_messages": [],
+        "last_mode": "local",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def run_full_auto_pipeline(history_days: int, horizon_days: int) -> dict:
-    start_date, end_date = default_date_range(history_days)
-    messages: list[str] = []
-
-    try:
-        processed_df, load_messages = prepare_and_save_salary_dataset(
-            start_date=start_date,
-            end_date=end_date,
-            use_fallback=True,
-        )
-        messages.extend(load_messages)
-    except Exception as exc:
-        messages.append(f"api недоступен беру локальные данные: {exc}")
-        processed_df = load_processed_salary_data()
-
-    top_directions = get_top_directions(processed_df, top_n=TOP_DIRECTIONS_COUNT)
-    if not top_directions:
-        raise RuntimeError("не удалось определить топ популярных направлений")
-
-    popularity_df = (
+def _build_popularity_df(processed_df: pd.DataFrame) -> pd.DataFrame:
+    # здесь считаем популярность направлений по числу вакансий
+    return (
         processed_df.groupby("direction", as_index=False)[COUNT_COLUMN]
         .sum()
         .rename(columns={COUNT_COLUMN: "vacancies_total"})
@@ -70,22 +54,59 @@ def run_full_auto_pipeline(history_days: int, horizon_days: int) -> dict:
         .reset_index(drop=True)
     )
 
+
+def _forecast_one_direction(processed_df: pd.DataFrame, direction: str, horizon_days: int) -> dict:
+    # если модели ещё нет то обучаем её один раз
+    try:
+        return forecast_direction(direction_name=direction, horizon=horizon_days, processed_df=processed_df)
+    except FileNotFoundError:
+        train_direction_model(processed_df=processed_df, direction_name=direction, save_artifact=True)
+        return forecast_direction(direction_name=direction, horizon=horizon_days, processed_df=processed_df)
+
+
+def run_full_auto_pipeline(history_days: int, horizon_days: int, refresh_data: bool = False) -> dict:
+    start_date, end_date = default_date_range(history_days)
+    messages: list[str] = []
+
+    # сначала пробуем локальные данные чтобы запуск был быстрее
+    if refresh_data:
+        try:
+            processed_df, load_messages = prepare_and_save_salary_dataset(
+                start_date=start_date,
+                end_date=end_date,
+                use_fallback=True,
+            )
+            messages.extend(load_messages)
+            st.session_state["last_mode"] = "api"
+        except Exception as exc:
+            messages.append(f"не получилось обновить данные через api беру локальный файл: {exc}")
+            processed_df = load_processed_salary_data()
+            st.session_state["last_mode"] = "local"
+    else:
+        try:
+            processed_df = load_processed_salary_data()
+            messages.append("использую локальные данные это быстрее")
+            st.session_state["last_mode"] = "local"
+        except Exception:
+            processed_df, load_messages = prepare_and_save_salary_dataset(
+                start_date=start_date,
+                end_date=end_date,
+                use_fallback=True,
+            )
+            messages.extend(load_messages)
+            st.session_state["last_mode"] = "api"
+
+    # берем только самые заметные направления чтобы отчет был компактным
+    top_directions = get_top_directions(processed_df, top_n=TOP_DIRECTIONS_COUNT)
+    if not top_directions:
+        raise RuntimeError("не удалось определить топ популярных направлений")
+
+    popularity_df = _build_popularity_df(processed_df)
+
     all_results: dict[str, dict] = {}
     for direction in top_directions:
-        try:
-            result = forecast_direction(
-                direction_name=direction,
-                horizon=horizon_days,
-                processed_df=processed_df,
-            )
-        except FileNotFoundError:
-            train_direction_model(processed_df=processed_df, direction_name=direction, save_artifact=True)
-            result = forecast_direction(
-                direction_name=direction,
-                horizon=horizon_days,
-                processed_df=processed_df,
-            )
-        all_results[direction] = result
+        # прогноз считаем отдельно по каждому направлению
+        all_results[direction] = _forecast_one_direction(processed_df, direction, horizon_days)
 
     report_df, recommendation_lines = build_detailed_report(
         all_results=all_results,
@@ -108,47 +129,44 @@ def run_full_auto_pipeline(history_days: int, horizon_days: int) -> dict:
 
 init_state()
 
-st.title("автопрогноз зарплат в it")
-st.subheader("ml и data science система сама собирает данные и делает отчет")
+st.title("Прогноз зарплат в it ml ds")
+st.subheader("Учебный проект который сам собирает вакансии и показывает понятный прогноз")
 
-with st.expander("что здесь происходит", expanded=True):
+with st.expander("о проекте", expanded=True):
     st.write(
-        """
-        я сделал полностью автоматический режим
-        ничего нажимать по шагам не надо
-        приложение само берет вакансии
-        само отбирает топ 5 направлений
-        само учит модели
-        и сразу выдает подробный отчет и рекомендации
-        """
+        "Это проект про рынок it вакансий. Он сам берет данные из hh api, находит самые популярные направления, "
+        "строит прогноз зарплаты и сразу показывает отчет. Я специально сделал всё без лишней сложности чтобы "
+        "систему было легко открыть и понять."
     )
 
 with st.sidebar:
-    st.markdown("### настройки")
+    st.markdown("### Настройки")
     history_days = st.slider(
-        "глубина истории дней",
+        "Глубина истории в днях",
         min_value=60,
         max_value=365,
         value=DEFAULT_HISTORY_DAYS,
         step=10,
     )
     horizon_days = st.slider(
-        "горизонт прогноза дней",
+        "Горизонт прогноза в днях",
         min_value=7,
         max_value=45,
         value=FORECAST_HORIZON_DAYS,
         step=1,
     )
-    force_refresh = st.button("обновить автоотчет", use_container_width=True)
+    refresh_data = st.button("Обновить данные из api", use_container_width=True)
+    rebuild_report = st.button("Пересобрать отчет", use_container_width=True)
 
 
-need_refresh = force_refresh or st.session_state["auto_result"] is None
-if need_refresh:
-    with st.spinner("делаю автоанализ подождите немного"):
+need_run = st.session_state["auto_result"] is None or refresh_data or rebuild_report
+if need_run:
+    with st.spinner("Делаю автоанализ подождите немного"):
         try:
             st.session_state["auto_result"] = run_full_auto_pipeline(
                 history_days=history_days,
                 horizon_days=horizon_days,
+                refresh_data=refresh_data,
             )
             st.session_state["last_error"] = None
             st.session_state["last_messages"] = st.session_state["auto_result"]["messages"]
@@ -167,46 +185,50 @@ if result is None:
 
 period_text = f"{result['start_date']} — {result['end_date']}"
 generated_at = result["created_at"].strftime("%d.%m.%Y %H:%M:%S")
-st.caption(f"период анализа: {period_text}   отчет обновлен: {generated_at}")
+mode_text = "локальные данные" if st.session_state["last_mode"] == "local" else "свежие данные из api"
+st.caption(f"Период анализа {period_text}   обновлено {generated_at}   режим {mode_text}")
 
 if st.session_state["last_messages"]:
-    with st.expander("журнал загрузки"):
+    with st.expander("Журнал загрузки"):
         for line in st.session_state["last_messages"]:
             st.write(f"- {line}")
 
-st.markdown("## подробный отчет")
+st.markdown("## Подробный отчет")
+# тут таблица где видно все направления сразу
 st.dataframe(result["report_df"], use_container_width=True)
 
-st.markdown("## топ 5 популярных направлений")
+st.markdown("## Топ 5 популярных направлений")
 try:
     popularity_fig = create_popularity_figure(result["popularity_df"])
     st.plotly_chart(popularity_fig, use_container_width=True)
 except Exception as exc:
     st.error(f"не удалось построить график популярности: {exc}")
 
-st.markdown("## рекомендации")
+st.markdown("## Рекомендации")
 for line in result["recommendation_lines"]:
     st.write(f"- {line}")
 
-st.markdown("## графики по каждому направлению")
+st.markdown("## Графики по каждому направлению")
 for direction in result["top_directions"]:
     direction_result = result["all_results"][direction]
     st.markdown(f"### {direction}")
 
+    # таблица нужна чтобы можно было быстро посмотреть сами числа без графика
     forecast_table = direction_result["forecast_df"].copy()
     forecast_table["date"] = pd.to_datetime(forecast_table["date"]).dt.strftime("%d.%m.%Y")
     for col in ("prediction", "lower", "upper"):
         forecast_table[col] = forecast_table[col].round(0).astype(int)
     forecast_table = forecast_table.rename(
         columns={
-            "date": "дата",
-            "prediction": "прогноз руб",
-            "lower": "нижняя граница руб",
-            "upper": "верхняя граница руб",
+            "date": "Дата",
+            "prediction": "Прогноз руб",
+            "lower": "Нижняя граница руб",
+            "upper": "Верхняя граница руб",
         }
     )
 
     try:
+        # отдельный график для каждой роли так отчет читать проще
         fig = create_direction_forecast_figure(
             direction_name=direction,
             history_series=direction_result["history_series"],
@@ -218,11 +240,9 @@ for direction in result["top_directions"]:
         st.error(f"ошибка графика для {direction}: {exc}")
 
     st.dataframe(
-        forecast_table[
-            ["дата", "прогноз руб", "нижняя граница руб", "верхняя граница руб"]
-        ],
+        forecast_table[["Дата", "Прогноз руб", "Нижняя граница руб", "Верхняя граница руб"]],
         use_container_width=True,
     )
 
 st.markdown("---")
-st.caption("источник вакансий hh api")
+st.caption("Источник вакансий hh api")

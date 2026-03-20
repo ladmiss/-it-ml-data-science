@@ -6,6 +6,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
 def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    # обычные метрики для сравнения моделей на test
     mae = float(mean_absolute_error(y_true, y_pred))
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     return {"MAE": mae, "RMSE": rmse}
@@ -14,6 +15,7 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float
 def choose_best_model(metrics_by_model: dict[str, dict[str, float]]) -> str:
     if not metrics_by_model:
         raise ValueError("словарь метрик пуст")
+    # сначала смотрим rmse а если он одинаковый то mae
     return min(
         metrics_by_model,
         key=lambda name: (metrics_by_model[name]["RMSE"], metrics_by_model[name]["MAE"]),
@@ -38,7 +40,7 @@ def _safe_plotly_import():
         import plotly.graph_objects as go
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "для графиков нужен plotly установите зависимости pip install -r requirements.txt"
+            "для графиков нужен plotly установите зависимости через pip install -r requirements.txt"
         ) from exc
     return go
 
@@ -58,6 +60,7 @@ def create_direction_forecast_figure(
     forecast["date"] = pd.to_datetime(forecast["date"])
 
     fig = go.Figure()
+    # история нужна чтобы видеть общий фон а не только прогноз
     fig.add_trace(
         go.Scatter(
             x=history_tail.index,
@@ -71,6 +74,7 @@ def create_direction_forecast_figure(
     if test_df is not None and not test_df.empty:
         test = test_df.copy()
         test["date"] = pd.to_datetime(test["date"])
+        # тест нужен чтобы показать как модель вела себя на отложенной части ряда
         fig.add_trace(
             go.Scatter(
                 x=test["date"],
@@ -90,7 +94,7 @@ def create_direction_forecast_figure(
             )
         )
 
-    # полоса неопределенности по rmse
+    # полоса неопределенности строится вокруг прогноза по rmse
     fig.add_trace(
         go.Scatter(
             x=forecast["date"],
@@ -216,10 +220,12 @@ def build_detailed_report(
         forecast = result["forecast_df"].copy()
         rmse = float(result.get("rmse_for_range", 0.0))
 
+        # сравниваем среднее последних двух недель с прогнозом вперед
         recent_mean = float(history.iloc[-14:].mean())
         future_mean = float(forecast["prediction"].mean())
         delta_pct = (future_mean - recent_mean) / max(recent_mean, 1.0) * 100
 
+        # простая вилка плюс минус на основе ошибки модели
         plus_minus = max(rmse, future_mean * 0.03)
         salary_low = max(0.0, future_mean - plus_minus)
         salary_high = future_mean + plus_minus
@@ -240,3 +246,4 @@ def build_detailed_report(
 
     report_df = pd.DataFrame(rows).sort_values("вакансий в периоде", ascending=False).reset_index(drop=True)
     return report_df, text_lines
+

@@ -75,6 +75,7 @@ def fetch_direction_vacancies(
     end_date: date,
     pages_limit: int = HH_PAGES_PER_QUERY,
 ) -> pd.DataFrame:
+    # api отдает результаты постранично поэтому идем по страницам циклом
     headers = {"User-Agent": REQUEST_USER_AGENT}
     all_rows: list[dict] = []
 
@@ -140,6 +141,7 @@ def fetch_direction_vacancies(
 
 
 def save_raw_vacancies(df: pd.DataFrame) -> None:
+    # сохраняем сырой слой отдельно чтобы можно было пересобрать проект без api
     ensure_project_dirs()
     df_to_save = df.copy()
     if "published_at" in df_to_save.columns:
@@ -150,6 +152,7 @@ def save_raw_vacancies(df: pd.DataFrame) -> None:
 
 
 def load_raw_vacancies() -> pd.DataFrame:
+    # локальный csv нужен на случай если сеть или api временно не отвечают
     if not RAW_VACANCIES_PATH.exists():
         raise FileNotFoundError(f"сырой файл вакансий не найден: {RAW_VACANCIES_PATH}")
 
@@ -176,6 +179,7 @@ def download_all_vacancies(
     all_frames: list[pd.DataFrame] = []
     fallback_df: pd.DataFrame | None = None
 
+    # сначала пробуем локальный csv чтобы проект был быстрее и не зависел от сети
     if use_fallback and RAW_VACANCIES_PATH.exists():
         try:
             fallback_df = load_raw_vacancies()
@@ -185,6 +189,7 @@ def download_all_vacancies(
     errors: list[str] = []
     for direction_name, query_text in DIRECTION_QUERIES.items():
         try:
+            # каждый запрос отдельно чтобы при ошибке не падал весь набор направлений
             direction_df = fetch_direction_vacancies(
                 direction_name=direction_name,
                 query_text=query_text,
@@ -248,6 +253,7 @@ def build_processed_salary_dataset(raw_df: pd.DataFrame) -> pd.DataFrame:
     data = data.dropna(subset=[DATE_COLUMN])
 
     # считаем все вакансии даже если в них нет зарплаты
+    # количество вакансий считаем отдельно от зарплаты
     counts_daily = (
         data.groupby(["direction", DATE_COLUMN], as_index=False)
         .size()
@@ -258,6 +264,7 @@ def build_processed_salary_dataset(raw_df: pd.DataFrame) -> pd.DataFrame:
     salaries = salaries[
         (salaries[TARGET_COLUMN] >= MIN_SALARY_RUB) & (salaries[TARGET_COLUMN] <= MAX_SALARY_RUB)
     ]
+    # по зарплате берем медиану чтобы меньше влияли выбросы
     salary_daily = (
         salaries.groupby(["direction", DATE_COLUMN], as_index=False)[TARGET_COLUMN]
         .median()
@@ -273,6 +280,7 @@ def build_processed_salary_dataset(raw_df: pd.DataFrame) -> pd.DataFrame:
     parts: list[pd.DataFrame] = []
     for direction_name, group in merged.groupby("direction"):
         part = group.copy().sort_values(DATE_COLUMN).reset_index(drop=True)
+        # выравниваем даты чтобы каждый день был в ряду
         full_dates = pd.date_range(part[DATE_COLUMN].min(), part[DATE_COLUMN].max(), freq="D")
         frame = pd.DataFrame({DATE_COLUMN: full_dates})
         frame["direction"] = direction_name
@@ -284,6 +292,7 @@ def build_processed_salary_dataset(raw_df: pd.DataFrame) -> pd.DataFrame:
         frame[TARGET_COLUMN] = frame[TARGET_COLUMN].ffill().bfill()
 
         if frame[TARGET_COLUMN].isna().all():
+            # если по направлению почти нет зарплат то ставим нейтральный запасной уровень
             frame[TARGET_COLUMN] = 120_000.0
 
         frame[TARGET_COLUMN] = frame[TARGET_COLUMN].clip(lower=MIN_SALARY_RUB, upper=MAX_SALARY_RUB)
@@ -344,6 +353,7 @@ def get_top_directions(
     if "direction" not in processed_df.columns or COUNT_COLUMN not in processed_df.columns:
         raise ValueError("в processed данных нет колонок direction vacancies_count")
 
+    # топ строим по сумме вакансий а не по зарплате
     popularity = (
         processed_df.groupby("direction", as_index=False)[COUNT_COLUMN]
         .sum()

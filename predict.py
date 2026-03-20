@@ -18,6 +18,7 @@ def _prepare_direction_history(processed_df: pd.DataFrame, direction_name: str) 
     if DATE_COLUMN not in processed_df.columns or TARGET_COLUMN not in processed_df.columns:
         raise ValueError(f"в processed данных нет {DATE_COLUMN} или {TARGET_COLUMN}")
 
+    # вытаскиваем только один ряд чтобы прогноз был по конкретному направлению
     data = processed_df[processed_df["direction"] == direction_name].copy()
     if data.empty:
         raise ValueError(f"нет данных для направления {direction_name}")
@@ -28,6 +29,7 @@ def _prepare_direction_history(processed_df: pd.DataFrame, direction_name: str) 
     data = data.drop_duplicates(subset=[DATE_COLUMN], keep="last")
 
     series = data.set_index(DATE_COLUMN)[TARGET_COLUMN].astype(float)
+    # делаем непрерывный ряд потому что рекурсивный прогноз требует полный хвост истории
     full_index = pd.date_range(series.index.min(), series.index.max(), freq="D")
     series = series.reindex(full_index).interpolate(limit_direction="both").ffill().bfill()
     series.name = direction_name
@@ -50,6 +52,7 @@ def recursive_forecast(
 
     rows: list[dict] = []
     for _ in range(horizon):
+        # берем следующий день и строим признаки уже с учетом прошлых прогнозов
         next_date = history.index.max() + pd.Timedelta(days=1)
         feature_row = build_feature_row_from_history(history, next_date)
         pred = float(model.predict(feature_row)[0])
@@ -75,6 +78,7 @@ def forecast_direction(
 
     forecast_df = recursive_forecast(model=model, history_series=history_series, horizon=horizon)
     rmse = float(artifact.get("rmse_for_range", 0.0))
+    # добавляем грубый доверительный коридор на основе ошибки на test
     forecast_df["lower"] = (forecast_df["prediction"] - rmse).clip(lower=0.0)
     forecast_df["upper"] = forecast_df["prediction"] + rmse
 
@@ -149,3 +153,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
