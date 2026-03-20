@@ -92,9 +92,9 @@ project/
 ## как запустить
 
 ```bash
-py pip install -r requirements.txt
-python train.py
-python -m streamlit run app.py
+py -3 -m pip install -r requirements.txt
+py -3 train.py --no-refresh
+py -3 -m streamlit run app.py
 ```
 ---
 
