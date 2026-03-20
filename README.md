@@ -94,15 +94,8 @@ project/
 ```bash
 py pip install -r requirements.txt
 python train.py
-streamlit run app.py
-```
-
-если `streamlit` не находится в системе
-
-```bash
 python -m streamlit run app.py
 ```
-
 ---
 
 ## как пользоваться
